@@ -34,8 +34,9 @@ onMounted(fetchTables)
       <tbody>
         <tr v-for="table in tables" :key="table.name">
           <td>{{ table.name }}</td>
-          <td>{{ table.region }}</td>
+          <td>{{ table.status }}</td>
           <td>{{ table.itemCount }}</td>
+          <td>{{ table.region }}</td>
         </tr>
       </tbody>
     </table>

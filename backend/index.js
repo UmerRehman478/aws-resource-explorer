@@ -3,10 +3,10 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { STSClient, AssumeRoleCommand } = require('@aws-sdk/client-sts');
-const { EC2Client, DescribeInstancesCommand, DescribeVpcsCommand, DescribeSubnetsCommand } = require('@aws-sdk/client-ec2');
-const { S3Client, ListBucketsCommand } = require('@aws-sdk/client-s3');
+const { EC2Client, DescribeInstancesCommand, DescribeVpcsCommand, DescribeSubnetsCommand, DescribeSecurityGroupsCommand } = require('@aws-sdk/client-ec2');
+const { S3Client, ListBucketsCommand, GetBucketLocationCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 const { LambdaClient, ListFunctionsCommand } = require('@aws-sdk/client-lambda');
-const { IAMClient, ListUsersCommand, ListRolesCommand } = require('@aws-sdk/client-iam');
+const { IAMClient, ListUsersCommand, ListRolesCommand, ListAttachedUserPoliciesCommand } = require('@aws-sdk/client-iam');
 const { DynamoDBClient, ListTablesCommand, DescribeTableCommand } = require('@aws-sdk/client-dynamodb');
 
 const app = express();
@@ -106,10 +106,37 @@ app.get('/api/s3/buckets', async (req, res) => {
       credentials: currentCredentials,
     });
     const response = await s3Client.send(new ListBucketsCommand({}));
-    const buckets = response.Buckets.map((b) => ({
-      name: b.Name,
-      creationDate: b.CreationDate,
-    }));
+
+    const buckets = await Promise.all(
+      response.Buckets.map(async (b) => {
+        let region = process.env.AWS_REGION;
+        let sizeBytes = 0;
+
+        try {
+          const locationResponse = await s3Client.send(new GetBucketLocationCommand({ Bucket: b.Name }));
+          region = locationResponse.LocationConstraint || 'us-east-1';
+        } catch (e) {
+          // If we can't get the region, just keep the default
+        }
+
+        try {
+          const objectsResponse = await s3Client.send(new ListObjectsV2Command({ Bucket: b.Name }));
+          if (objectsResponse.Contents) {
+            sizeBytes = objectsResponse.Contents.reduce((total, obj) => total + (obj.Size || 0), 0);
+          }
+        } catch (e) {
+          // If we can't list objects, just leave size as 0
+        }
+
+        return {
+          name: b.Name,
+          creationDate: b.CreationDate,
+          region,
+          sizeReadable: `${(sizeBytes / 1024).toFixed(2)} KB`,
+        };
+      })
+    );
+
     res.json({ buckets });
   } catch (err) {
     console.error('Error fetching S3 buckets:', err);
@@ -163,7 +190,20 @@ app.get('/api/iam/users', async (req, res) => {
       createdDate: r.CreateDate,
     }));
 
-    res.json({ users, roles });
+    const policies = [];
+    for (const user of usersResponse.Users) {
+      const attachedPolicies = await iamClient.send(
+        new ListAttachedUserPoliciesCommand({ UserName: user.UserName })
+      );
+      attachedPolicies.AttachedPolicies.forEach((policy) => {
+        policies.push({
+          policyName: policy.PolicyName,
+          attachedToUser: user.UserName,
+        });
+      });
+    }
+
+    res.json({ users, roles, policies });
   } catch (err) {
     console.error('Error fetching IAM data:', err);
     res.status(500).json({ error: err.message });
@@ -182,6 +222,7 @@ app.get('/api/vpc/list', async (req, res) => {
     });
     const vpcsResponse = await ec2Client.send(new DescribeVpcsCommand({}));
     const subnetsResponse = await ec2Client.send(new DescribeSubnetsCommand({}));
+    const sgResponse = await ec2Client.send(new DescribeSecurityGroupsCommand({}));
 
     const vpcs = vpcsResponse.Vpcs.map((v) => ({
       id: v.VpcId,
@@ -194,8 +235,14 @@ app.get('/api/vpc/list', async (req, res) => {
       cidrBlock: s.CidrBlock,
       availabilityZone: s.AvailabilityZone,
     }));
+    const securityGroups = sgResponse.SecurityGroups.map((sg) => ({
+      id: sg.GroupId,
+      name: sg.GroupName,
+      vpcId: sg.VpcId,
+      description: sg.Description,
+    }));
 
-    res.json({ vpcs, subnets });
+    res.json({ vpcs, subnets, securityGroups });
   } catch (err) {
     console.error('Error fetching VPC data:', err);
     res.status(500).json({ error: err.message });

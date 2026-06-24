@@ -26,12 +26,16 @@ onMounted(fetchBuckets)
       <thead>
         <tr>
           <th>Bucket Name</th>
+          <th>Region</th>
+          <th>Size</th>
           <th>Creation Date</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="bucket in buckets" :key="bucket.name">
           <td>{{ bucket.name }}</td>
+          <td>{{ bucket.region }}</td>
+          <td>{{ bucket.sizeReadable }}</td>
           <td>{{ bucket.creationDate }}</td>
         </tr>
       </tbody>
